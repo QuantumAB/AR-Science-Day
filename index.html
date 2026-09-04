@@ -693,6 +693,9 @@
 
     /* ใช้ URL เดิมได้ ถ้าแก้ Apps Script ในโปรเจกต์เดิมแล้ว Deploy เป็น New version */
     const GAS_URL = 'https://script.google.com/a/macros/anubanamnat.ac.th/s/AKfycbz830iAGNWRidGY2qSVq4pepa0puhbL5Z-gy0JXacK6DmYe8zMpeSArCstn9o7Z7zc-iw/exec';
+    // CONFIG อ่านตรงจาก Google Sheet นี้ เพื่อไม่ให้ Deployment เก่ามาทับหัวข้อหน้าแรก
+    const CONFIG_SPREADSHEET_ID = '1I37gKEX9UJSm3-1EGq7YGlrIonhonQ3EAWRpNnne_MI';
+    const CONFIG_SHEET_NAME = 'CONFIG';
 
     const SOLAR_DEFAULT_CHOICES = [
       'ดวงอาทิตย์','ดาวพุธ','ดาวศุกร์','โลก','ดาวอังคาร',
@@ -853,21 +856,103 @@
       });
     }
 
+    function loadConfigDirectFromSheet(timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+        const callbackName = '__sheetConfigCallback_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+        const script = document.createElement('script');
+        const timer = setTimeout(() => cleanup(new Error('หมดเวลารอ CONFIG จาก Google Sheet')), timeoutMs);
+
+        function cleanup(error, data) {
+          clearTimeout(timer);
+          try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+          script.remove();
+          if (error) reject(error); else resolve(data);
+        }
+
+        window[callbackName] = response => {
+          try {
+            if (!response || response.status === 'error' || !response.table) {
+              throw new Error('อ่านชีต CONFIG โดยตรงไม่สำเร็จ');
+            }
+
+            const result = {};
+            const rows = Array.isArray(response.table.rows) ? response.table.rows : [];
+            rows.forEach(row => {
+              const cells = Array.isArray(row.c) ? row.c : [];
+              const key = cells[0] && cells[0].v != null ? String(cells[0].v).trim() : '';
+              if (!key) return;
+
+              const value = cells[1] && cells[1].v != null ? String(cells[1].v).trim() : '';
+              const activeRaw = cells[2] && cells[2].v != null ? cells[2].v : true;
+              const active = activeRaw === true || String(activeRaw).toLowerCase() === 'true' || String(activeRaw) === '1';
+              if (!active) return;
+              result[key] = value;
+            });
+
+            if (!Object.keys(result).length) throw new Error('ชีต CONFIG ไม่มีข้อมูล');
+            cleanup(null, result);
+          } catch (error) {
+            cleanup(error);
+          }
+        };
+
+        script.onerror = () => cleanup(new Error('เชื่อมต่อ Google Sheet CONFIG ไม่สำเร็จ'));
+
+        const params = new URLSearchParams({
+          sheet: CONFIG_SHEET_NAME,
+          headers: '1',
+          tq: 'select A,B,D where A is not null',
+          tqx: 'responseHandler:' + callbackName,
+          _: String(Date.now())
+        });
+        script.src = `https://docs.google.com/spreadsheets/d/${CONFIG_SPREADSHEET_ID}/gviz/tq?${params.toString()}`;
+        document.head.appendChild(script);
+      });
+    }
+
     async function loadConfig() {
       showOnly('boot');
       el.bootError.classList.add('hidden');
 
-      if (!isGasUrlReady()) {
-        throw new Error('GAS_URL ไม่ถูกต้อง กรุณาใช้ลิงก์ Apps Script Web App ที่ลงท้ายด้วย /exec');
+      let gasConfig = {};
+      let sheetConfig = {};
+      let gasError = null;
+      let sheetError = null;
+
+      // อ่านทั้งสองทาง แต่ CONFIG จาก Google Sheet โดยตรงมีสิทธิ์สูงสุด
+      if (isGasUrlReady()) {
+        try {
+          const data = await jsonp(GAS_URL, { action: 'getConfig' });
+          if (data && data.success === true) {
+            gasConfig = normalizeConfig(data.config || {});
+          } else {
+            gasError = new Error(data && data.message ? data.message : 'โหลด CONFIG จาก Apps Script ไม่สำเร็จ');
+          }
+        } catch (error) {
+          gasError = error;
+        }
+      } else {
+        gasError = new Error('GAS_URL ไม่ถูกต้อง');
       }
 
-      const data = await jsonp(GAS_URL, { action: 'getConfig' });
-
-      if (!data || data.success !== true) {
-        throw new Error(data && data.message ? data.message : 'โหลด CONFIG ไม่สำเร็จ');
+      try {
+        sheetConfig = normalizeConfig(await loadConfigDirectFromSheet());
+      } catch (error) {
+        sheetError = error;
       }
 
-      config = normalizeConfig(data.config || {});
+      // ค่าจากชีตจริงทับค่าจาก Deployment เก่า
+      config = { ...gasConfig, ...sheetConfig };
+
+      // กันกรณี Apps Script เก่ายังส่งชื่อเดิมมา แต่ชีตตรงอ่านไม่ได้ชั่วคราว
+      if (!sheetConfig.APP_TITLE && config.APP_TITLE === 'แบบทดสอบหลังเรียน สัตว์มีกระดูกสันหลัง') {
+        config.APP_TITLE = 'เกม AR วิทยาศาสตร์';
+      }
+
+      if (!Object.keys(config).length) {
+        throw (sheetError || gasError || new Error('โหลด CONFIG ไม่สำเร็จ'));
+      }
+
       applyConfigToUI();
       showOnly('mode');
     }
@@ -957,7 +1042,7 @@
         throw new Error(data && data.message ? data.message : 'โหลดคำถามไม่สำเร็จ');
       }
 
-      config = { ...config, ...normalizeConfig(data.config || {}) };
+      config = { ...normalizeConfig(data.config || {}), ...config };
       const bank = Array.isArray(data.questions)
         ? data.questions.filter(isValidQuestion)
         : [];
