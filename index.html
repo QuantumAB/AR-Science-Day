@@ -694,6 +694,11 @@
     /* ใช้ URL เดิมได้ ถ้าแก้ Apps Script ในโปรเจกต์เดิมแล้ว Deploy เป็น New version */
     const GAS_URL = 'https://script.google.com/a/macros/anubanamnat.ac.th/s/AKfycbz830iAGNWRidGY2qSVq4pepa0puhbL5Z-gy0JXacK6DmYe8zMpeSArCstn9o7Z7zc-iw/exec';
 
+    const SOLAR_DEFAULT_CHOICES = [
+      'ดวงอาทิตย์','ดาวพุธ','ดาวศุกร์','โลก','ดาวอังคาร',
+      'ดาวพฤหัสบดี','ดาวเสาร์','ดาวยูเรนัส','ดาวเนปจูน'
+    ];
+
     const $ = selector => document.querySelector(selector);
     const $$ = selector => Array.from(document.querySelectorAll(selector));
 
@@ -752,6 +757,7 @@
     let currentMode = '';
     let currentSet = '';
     let questionBank = [];
+    let solarAnswerBank = [];
     let roundQuestions = [];
     let currentIndex = 0;
     let score = 0;
@@ -906,6 +912,10 @@
         ? cfg('SOLAR_SET', 'solar')
         : cfg('VERTEBRATE_SET', 'vertebrate');
 
+      // ล้างค่าปุ่มจากโหมดก่อนหน้าทันที ป้องกันคำตอบสัตว์ค้างในโหมดระบบสุริยะ
+      setAnswerTexts(['','','','','']);
+      if (mode !== 'solar') solarAnswerBank = [];
+
       showOnly('loading');
       el.loadingSubtitle.textContent = mode === 'solar'
         ? 'กำลังเตรียมภาพระบบสุริยะและระบบจับนิ้วชี้'
@@ -931,7 +941,10 @@
 
     async function loadQuestionBank(setName) {
       if (bankCache[setName]) {
-        questionBank = bankCache[setName].slice();
+        questionBank = bankCache[setName].questions.slice();
+        if (setName === cfg('SOLAR_SET', 'solar')) {
+          solarAnswerBank = bankCache[setName].answerBank.slice();
+        }
         return;
       }
 
@@ -954,7 +967,26 @@
         throw new Error(`คำถามชุด ${setName} มีไม่เพียงพอ`);
       }
 
-      bankCache[setName] = bank.slice();
+      let answerBank = [];
+      if (setName === cfg('SOLAR_SET', 'solar')) {
+        const fromApi = Array.isArray(data.answerBank) ? data.answerBank : [];
+        const rawChoices = fromApi.length
+          ? fromApi
+          : bank.map(q => q.correct || q.objectName || q.animal);
+
+        answerBank = Array.from(new Set(
+          rawChoices.map(v => String(v || '').trim()).filter(Boolean)
+        ));
+
+        // ต้องมีอย่างน้อย 5 คำตอบจากชีตระบบสุริยะ มิฉะนั้นใช้รายชื่อมาตรฐาน 9 วัตถุ
+        if (answerBank.length < 5) answerBank = SOLAR_DEFAULT_CHOICES.slice();
+        solarAnswerBank = answerBank.slice();
+      }
+
+      bankCache[setName] = {
+        questions: bank.slice(),
+        answerBank: answerBank.slice()
+      };
       questionBank = bank.slice();
     }
 
@@ -973,20 +1005,11 @@
     }
 
     function getSolarChoices() {
-      // คลังคำตอบระบบสุริยะอ่านจาก QUESTIONS_SOLAR โดยตรง
-      // จึงไม่มีคำตอบของสัตว์ปนเข้ามาเด็ดขาด
-      const values = questionBank
-        .map(q => String(q.correct || q.objectName || q.animal || '').trim())
-        .filter(Boolean);
-
-      const unique = Array.from(new Set(values));
-      if (unique.length >= 5) return unique;
-
-      // fallback เฉพาะกรณีชีตโหลดไม่ครบ
-      return [
-        'ดวงอาทิตย์','ดาวพุธ','ดาวศุกร์','โลก','ดาวอังคาร',
-        'ดาวพฤหัสบดี','ดาวเสาร์','ดาวยูเรนัส','ดาวเนปจูน'
-      ];
+      // โหมดระบบสุริยะใช้คลังคำตอบจาก QUESTIONS_SOLAR / answerBank เท่านั้น
+      const unique = Array.from(new Set(
+        solarAnswerBank.map(v => String(v || '').trim()).filter(Boolean)
+      ));
+      return unique.length >= 5 ? unique : SOLAR_DEFAULT_CHOICES.slice();
     }
 
     function storageKey() {
