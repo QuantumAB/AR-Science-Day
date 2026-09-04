@@ -997,9 +997,11 @@
         ? cfg('SOLAR_SET', 'solar')
         : cfg('VERTEBRATE_SET', 'vertebrate');
 
-      // ล้างค่าปุ่มจากโหมดก่อนหน้าทันที ป้องกันคำตอบสัตว์ค้างในโหมดระบบสุริยะ
+      // ล้างค่าปุ่มจากโหมดก่อนหน้าทันที
       setAnswerTexts(['','','','','']);
-      if (mode !== 'solar') solarAnswerBank = [];
+      // โหมดระบบสุริยะล็อกคลังคำตอบไว้ 9 วัตถุเท่านั้น
+      // ไม่รับ OPTION_* หรือ answerBank จากโหมดสัตว์เด็ดขาด
+      solarAnswerBank = mode === 'solar' ? SOLAR_DEFAULT_CHOICES.slice() : [];
 
       showOnly('loading');
       el.loadingSubtitle.textContent = mode === 'solar'
@@ -1028,7 +1030,7 @@
       if (bankCache[setName]) {
         questionBank = bankCache[setName].questions.slice();
         if (setName === cfg('SOLAR_SET', 'solar')) {
-          solarAnswerBank = bankCache[setName].answerBank.slice();
+          solarAnswerBank = SOLAR_DEFAULT_CHOICES.slice();
         }
         return;
       }
@@ -1054,18 +1056,10 @@
 
       let answerBank = [];
       if (setName === cfg('SOLAR_SET', 'solar')) {
-        const fromApi = Array.isArray(data.answerBank) ? data.answerBank : [];
-        const rawChoices = fromApi.length
-          ? fromApi
-          : bank.map(q => q.correct || q.objectName || q.animal);
-
-        answerBank = Array.from(new Set(
-          rawChoices.map(v => String(v || '').trim()).filter(Boolean)
-        ));
-
-        // ต้องมีอย่างน้อย 5 คำตอบจากชีตระบบสุริยะ มิฉะนั้นใช้รายชื่อมาตรฐาน 9 วัตถุ
-        if (answerBank.length < 5) answerBank = SOLAR_DEFAULT_CHOICES.slice();
-        solarAnswerBank = answerBank.slice();
+        // สำคัญ: โหมดระบบสุริยะไม่เชื่อ answerBank จาก API
+        // เพราะ Deployment เก่าอาจส่งตัวเลือกสัตว์กลับมาได้
+        answerBank = SOLAR_DEFAULT_CHOICES.slice();
+        solarAnswerBank = SOLAR_DEFAULT_CHOICES.slice();
       }
 
       bankCache[setName] = {
@@ -1090,11 +1084,15 @@
     }
 
     function getSolarChoices() {
-      // โหมดระบบสุริยะใช้คลังคำตอบจาก QUESTIONS_SOLAR / answerBank เท่านั้น
-      const unique = Array.from(new Set(
-        solarAnswerBank.map(v => String(v || '').trim()).filter(Boolean)
-      ));
-      return unique.length >= 5 ? unique : SOLAR_DEFAULT_CHOICES.slice();
+      // ล็อกคำตอบระบบสุริยะ 9 รายการไว้ตรงนี้เท่านั้น
+      return SOLAR_DEFAULT_CHOICES.slice();
+    }
+
+    function getSolarCorrectAnswer(q) {
+      const candidates = [q && q.correct, q && q.objectName, q && q.animal]
+        .map(v => String(v || '').trim())
+        .filter(Boolean);
+      return candidates.find(v => SOLAR_DEFAULT_CHOICES.includes(v)) || '';
     }
 
     function storageKey() {
@@ -1298,7 +1296,7 @@
         el.solarQuestion.classList.remove('hidden');
         el.solarHint.textContent = cfg('SOLAR_QUESTION_HINT', 'ภาพนี้คือวัตถุใดในระบบสุริยะ');
         renderSolarImage(q);
-        setAnswerTexts(makeSolarOptions(q.correct));
+        setAnswerTexts(makeSolarOptions(getSolarCorrectAnswer(q)));
       } else {
         el.gameScreen.classList.remove('solar-layout');
         el.questionPanel.classList.remove('solar-mode');
@@ -1332,7 +1330,10 @@
 
     function makeSolarOptions(correct) {
       const answer = String(correct || '').trim();
-      const pool = getSolarChoices().filter(item => item !== answer);
+      if (!SOLAR_DEFAULT_CHOICES.includes(answer)) {
+        throw new Error('คำตอบของคำถามระบบสุริยะไม่อยู่ในชุด 9 วัตถุที่กำหนด');
+      }
+      const pool = SOLAR_DEFAULT_CHOICES.filter(item => item !== answer);
       const distractors = shuffle(pool).slice(0, 4);
       return shuffle([answer, ...distractors]);
     }
@@ -1650,7 +1651,9 @@
       clearInterval(timerLoop);
 
       const q = roundQuestions[currentIndex];
-      const correctKey = String(q.correct || '').trim();
+      const correctKey = currentMode === 'solar'
+        ? getSolarCorrectAnswer(q)
+        : String(q.correct || '').trim();
       const isTimeout = selectedKey === '__TIMEOUT__';
       const isCorrect = !isTimeout && selectedKey === correctKey;
 
